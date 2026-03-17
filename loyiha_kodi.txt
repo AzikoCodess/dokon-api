@@ -1,0 +1,756 @@
+
+
+==================================================
+FILE: .\.env
+==================================================
+
+PORT = 8000
+MONGO_URL = mongodb://localhost:27017/dokon-api
+JWT_SECRET = secretKey
+HOST=localhost
+BASE_URL=http://localhost:8000
+
+==================================================
+FILE: .\app.js
+==================================================
+
+require("dotenv").config();
+const express = require("express");
+const mongoose = require("mongoose");
+const swaggerJsdoc = require("swagger-jsdoc")
+const swaggerUi = require("swagger-ui-express")
+const app = express();
+
+app.use(express.json());
+
+mongoose.connect(process.env.MONGO_URL)
+    .then(() => {
+        console.log("MongoDB connected");
+    })
+    .catch((err) => {
+        console.log(err);
+    });
+
+const authRoute = require("./routes/auth.route")
+const productRoute = require("./routes/product.route")
+const orderRoute = require("./routes/order.route")
+
+
+app.use("/auth", authRoute)
+app.use("/products", productRoute)
+app.use("/orders", orderRoute)
+const swaggerOptions = {
+    definition: {
+        openapi: "3.0.0",
+        info: {
+            title: "Dokon API",
+            version: "1.0.0",
+            description: "Dokon boshqaruvi"
+        },
+        servers: [
+            { url: process.env.BASE_URL }
+        ],
+        components: {
+            securitySchemes: {
+                bearerAuth: {
+                    type: "http",
+                    scheme: "bearer",
+                    bearerFormat: "JWT"
+                }
+            }
+        }
+    },
+    apis: ["./routes/*.js"]
+};
+
+swaggerDocument = swaggerJsdoc(swaggerOptions);
+app.use("/api-dokon", swaggerUi.serve, swaggerUi.setup(swaggerDocument));
+
+app.listen(process.env.PORT, () => {
+    console.log(`Server is running on port ${process.env.PORT}`);
+});
+
+
+// Models:
+//   - User (name, email, password, role)
+//   - Product (name, description, price, category, quantity)
+//   - Order (user, items, totalPrice, status)
+
+// Routes:
+//   - /auth → register, login
+//   - /products → CRUD (admin), ko'rish (hammaga)
+//   - /orders → buyurtma berish, o'z buyurtmalari, barcha buyurtmalar (admin)
+
+==================================================
+FILE: .\package.json
+==================================================
+
+{
+  "name": "dokon-api",
+  "version": "1.0.0",
+  "main": "app.js",
+  "scripts": {
+    "start": "node app.js",
+    "dev": "nodemon app.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "description": "",
+  "dependencies": {
+    "bcryptjs": "^3.0.3",
+    "cors": "^2.8.6",
+    "dotenv": "^17.3.1",
+    "express": "^5.2.1",
+    "joi": "^18.0.2",
+    "jsonwebtoken": "^9.0.3",
+    "mongoose": "^9.2.4",
+    "swagger-jsdoc": "^6.2.8",
+    "swagger-ui-express": "^5.0.1"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.14"
+  }
+}
+
+==================================================
+FILE: .\controllers\auth.controller.js
+==================================================
+
+const User = require("../models/User.model")
+const bcrypt = require("bcryptjs")
+const jwt = require("jsonwebtoken")
+const UserDto = require("../Dtos/user.dto")
+
+const register = async (req, res) => {
+    try {
+        const { email, password } = req.body
+        const user = await User.findOne({ email })
+        if (user) {
+            return res.status(400).json({ error: "Bunday foydalanuvchi mavjud" })
+        }
+        const hashedPassword = await bcrypt.hash(password, 10)
+        const newUser = new User({ email, password: hashedPassword })
+        await newUser.save()
+        const userDto = new UserDto(newUser)
+        res.status(201).json({ message: "User created successfully", user: userDto })
+    } catch (error) {
+        res.status(500).json({ error: error.message })
+    }
+}
+
+const login = async (req, res) => {
+    try {
+        const { email, password } = req.body
+        const user = await User.findOne({ email })
+        if (!user) {
+            return res.status(404).json({ error: "Bunday foydalanuvchi topilmadi" })
+        }
+        const isPasswordValid = await bcrypt.compare(password, user.password)
+        if (!isPasswordValid) {
+            return res.status(401).json({ error: "Bunday foydalanuvchi topilmadi !" })
+        }
+        const userDto = new UserDto(user)
+        const token = jwt.sign({ id: userDto.id, role: userDto.role }, process.env.JWT_SECRET, { expiresIn: "1h" })
+        res.status(200).json({ message: "User logged in successfully", user: userDto, token })
+    } catch (error) {
+        res.status(500).json({ error: error.message })
+    }
+}
+
+module.exports = { register, login }
+
+
+==================================================
+FILE: .\controllers\order.controller.js
+==================================================
+
+const Order = require("../models/Order.model")
+const Product = require("../models/Product.model")
+
+exports.createOrder = async (req, res) => {
+    try {
+        const { items } = req.body
+        console.log("items:", items)
+        let totalPrice = 0
+        for (let item of items) {
+            console.log("item:", item)
+            const product = await Product.findById(item.product)
+            console.log("product:", product)
+            if (!product) return res.status(404).json({ error: "Mahsulot topilmadi" })
+            if (product.quantity < item.quantity) {
+                return res.status(400).json({ error: `${product.name} mahsulot yetarli emas` })
+            }
+            totalPrice += product.price * item.quantity
+            product.quantity -= item.quantity
+            await product.save()
+        }
+
+        const order = new Order({
+            user: req.user.id,
+            items, totalPrice
+        })
+        await order.save()
+        res.status(201).json({ message: "Buyurtma yaratildi", order })
+    } catch (error) {
+        res.status(500).json({ message: error.message })
+    }
+}
+
+exports.myOrders = async (req, res) => {
+    try {
+        const orders = await Order.find({ user: req.user.id })
+            .populate("items.product", "name price")
+        res.status(200).json({ orders })
+    } catch (error) {
+        res.status(500).json({ error: error.message })
+    }
+}
+
+exports.getAllOrders = async (req, res) => {
+    try {
+        if (req.user.role !== "admin") {
+            return res.status(403).json({ error: "Siz admin emassiz" })
+        }
+        const orders = await Order.find()
+            .populate("user", "email")
+            .populate("items.product", "name price")
+        res.json(orders)
+    } catch (error) {
+        res.status(500).json({ error: error.message })
+    }
+}
+
+==================================================
+FILE: .\controllers\product.controller.js
+==================================================
+
+const Product = require("../models/Product.model")
+
+const createProduct = async (req, res) => {
+    try {
+        if (req.user.role !== "admin") {
+            return res.status(403).json({ message: "Mahsulot qo'shish huquqiga ega emassiz" })
+        }
+        const { name, description, price, category, quantity } = req.body
+        const newProduct = new Product({ name, description, price, category, quantity })
+        await newProduct.save()
+        res.status(201).json({ message: "Mahsulot yaratildi", product: newProduct })
+    } catch (error) {
+        res.status(500).json({ error: error.message })
+    }
+}
+
+const getAllProducts = async (req, res) => {
+    try {
+        const products = await Product.find()
+        res.status(200).json(products)
+    } catch (error) {
+        res.status(500).json({ error: error.message })
+    }
+}
+
+const updateProduct = async (req, res) => {
+    try {
+        if (req.user.role !== "admin") {
+            return res.status(403).json({ message: "Mahsulot o'zgartirish huquqiga ega emassiz" })
+        }
+        const product = await Product.findByIdAndUpdate(req.params.id, req.body, { new: true })
+        if (!product) {
+            return res.status(403).json({ error: "Mahsulot topilmadi" })
+        }
+        res.json({ message: "Mahsulot o'zgartirildi", product })
+    } catch (error) {
+        res.status(500).json({ error: error.message })
+    }
+}
+
+const deleteProduct = async (req, res) => {
+    try {
+        if (req.user.role !== "admin") {
+            return res.status(404).json({ error: "Mahsulot o'chirish huquqiga ega emassiz" })
+        }
+        const product = await Product.findByIdAndDelete(req.params.id)
+        if (!product) {
+            return res.status(404).json({ error: "Mahsulot topilmadi" })
+        }
+        res.json({ message: "Mahsulot o'chirildi", product })
+    } catch (error) {
+        res.status(500).json({ error: error.message })
+    }
+}
+
+module.exports = { createProduct, getAllProducts, updateProduct, deleteProduct }
+
+==================================================
+FILE: .\Dtos\user.dto.js
+==================================================
+
+class UserDto {
+    constructor(user) {
+        this.id = user._id
+        this.email = user.email
+        this.role = user.role
+    }
+}
+
+module.exports = UserDto
+
+==================================================
+FILE: .\middleware\auth.middleware.js
+==================================================
+
+const jwt = require("jsonwebtoken")
+
+const authMiddleware = (req, res, next) => {
+    try {
+        const authHeader = req.headers.authorization
+        const token = authHeader && authHeader.startsWith("Bearer ") ? authHeader.split(" ")[1] : authHeader
+        if (!token) {
+            return res.status(401).json({ message: "Token topilmadi" })
+        }
+        const decodedToken = jwt.verify(token, process.env.JWT_SECRET)
+        req.user = decodedToken
+        next()
+    } catch (error) {
+        res.status(500).json({ message: "Token noto'g'ri" })
+    }
+}
+
+module.exports = authMiddleware
+
+==================================================
+FILE: .\models\Order.model.js
+==================================================
+
+const mongoose = require("mongoose")
+
+const orderSchema = new mongoose.Schema({
+    user: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: "User",
+        required: true
+    },
+    items: [
+        {
+            product: {
+                type: mongoose.Schema.Types.ObjectId,
+                ref: "Product"
+            },
+            quantity: Number
+        }
+    ],
+    totalPrice: {
+        type: Number,
+        default: 0,
+        required: true
+    },
+    status: {
+        type: String,
+        enum: ["kutilmoqda", "jarayonda", "yetkazilmoqda", "yetkazildi", "bekor qilindi"],
+        default: "kutilmoqda"
+    }
+}, { timestamps: true })
+
+const Order = mongoose.model("Order", orderSchema)
+
+module.exports = Order
+
+==================================================
+FILE: .\models\Product.model.js
+==================================================
+
+const mongoose = require("mongoose")
+
+const productSchema = new mongoose.Schema({
+    name: {
+        type: String,
+        required: true,
+        minlength: 3,
+        maxlength: 100
+    },
+    description: {
+        type: String,
+        required: true,
+        minlength: 3,
+        maxlength: 500
+    },
+    price: {
+        type: Number,
+        required: true,
+        min: 0
+    },
+    category: {
+        type: String,
+        required: true,
+        enum: ["elektronika", "kiyim", "oziq-ovqat", "kitoblar", "sport", "kosmetika"]
+    },
+    quantity: {
+        type: Number,
+        required: true,
+        min: 0
+    }
+}, { timestamps: true })
+
+const Product = mongoose.model("Product", productSchema)
+
+module.exports = Product
+
+==================================================
+FILE: .\models\User.model.js
+==================================================
+
+const mongoose = require("mongoose")
+
+const userSchema = new mongoose.Schema({
+    email: {
+        type: String,
+        required: true,
+        unique: true,
+        trim: true,
+        lowercase: true,
+        match: /^[^\s@]+@[^\s@]+\.[^\s@]+$/
+    },
+    password: {
+        type: String,
+        required: true,
+        minlength: 6
+    },
+    role: {
+        type: String,
+        enum: ["admin", "user"],
+        default: "user"
+    }
+}, { timestamps: true })
+
+const User = mongoose.model("User", userSchema)
+
+module.exports = User
+
+==================================================
+FILE: .\routes\auth.route.js
+==================================================
+
+const express = require("express")
+const router = express.Router()
+const { register, login } = require("../controllers/auth.controller")
+
+/**
+ * @swagger
+ * /auth/register:
+ *   post:
+ *     summary: Ro'yxatdan o'tish
+ *     tags: [Auth]
+ *
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - email
+ *               - password
+ *             properties:
+ *               email:
+ *                 type: string
+ *                 example: user@gmail.com
+ *               password:
+ *                 type: string
+ *                 example: 123456
+ *
+ *     responses:
+ *       201:
+ *         description: User yaratildi
+ *
+ *       500:
+ *         description: Server xatosi
+ */
+router.post("/register", register)
+
+/**
+ * @swagger
+ * /auth/login:
+ *   post:
+ *     summary: Login qilish
+ *     tags: [Auth]
+ *
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - email
+ *               - password
+ *             properties:
+ *               email:
+ *                 type: string
+ *                 example: user@gmail.com
+ *               password:
+ *                 type: string
+ *                 example: 123456
+ *
+ *     responses:
+ *       200:
+ *         description: Login muvaffaqiyatli
+ *
+ *       401:
+ *         description: Parol noto'g'ri
+ *
+ *       404:
+ *         description: User topilmadi
+ *
+ *       500:
+ *         description: Server xatosi
+ */
+router.post("/login", login)
+
+module.exports = router
+
+==================================================
+FILE: .\routes\order.route.js
+==================================================
+
+const express = require("express")
+const router = express.Router()
+const { createOrder, myOrders, getAllOrders } = require("../controllers/order.controller")
+const authMiddleware = require("../middleware/auth.middleware")
+
+/**
+ * @swagger
+ * /orders/create:
+ *   post:
+ *     summary: Buyurtma yaratish
+ *     tags: [Orders]
+ *     security:
+ *       - bearerAuth: []
+ *
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - items
+ *               - totalPrice
+ *             properties:
+ *               items:
+ *                 type: array
+ *                 example:
+ *                   - product: "665f1a2b3c4d5e6f7a8b9c1d"
+ *                     quantity: 2
+ *
+ *     responses:
+ *       201:
+ *         description: Buyurtma yaratildi
+ *
+ *       401:
+ *         description: Token yo'q
+ *
+ *       500:
+ *         description: Server xatosi
+ */
+router.post("/create", authMiddleware, createOrder)
+
+/**
+ * @swagger
+ * /orders/myOrders:
+ *   get:
+ *     summary: Foydalanuvchining buyurtmalari
+ *     tags: [Orders]
+ *     security:
+ *       - bearerAuth: []
+ *
+ *     responses:
+ *       200:
+ *         description: Buyurtmalar ro'yxati
+ *
+ *       401:
+ *         description: Token yo'q
+ *
+ *       500:
+ *         description: Server xatosi
+ */
+router.get("/myOrders", authMiddleware, myOrders)
+
+/**
+ * @swagger
+ * /orders/getAllOrders:
+ *   get:
+ *     summary: Barcha buyurtmalar
+ *     tags: [Orders]
+ *     security:
+ *       - bearerAuth: []
+ *
+ *     responses:
+ *       200:
+ *         description: Buyurtmalar ro'yxati
+ *
+ *       401:
+ *         description: Token yo'q
+ *
+ *       500:
+ *         description: Server xatosi
+ */
+router.get("/getAllOrders", authMiddleware, getAllOrders)
+
+module.exports = router
+
+==================================================
+FILE: .\routes\product.route.js
+==================================================
+
+const express = require("express")
+const router = express.Router()
+const { createProduct, getAllProducts, updateProduct, deleteProduct } = require("../controllers/product.controller")
+const authMiddleware = require("../middleware/auth.middleware")
+
+/**
+ * @swagger
+ * /products/create:
+ *   post:
+ *     summary: Maxsulot qo'shish (admin)
+ *     tags: [Products]
+ *     security:
+ *       - bearerAuth: []
+ *
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - name
+ *               - price
+ *               - category
+ *               - quantity
+ *             properties:
+ *               name:
+ *                 type: string
+ *                 example: Telefon
+ *
+ *               description:
+ *                 type: string
+ *                 example: Yangi model
+ *
+ *               price:
+ *                 type: number
+ *                 example: 1000
+ *
+ *               category:
+ *                 type: string
+ *                 example: elektronika
+ *
+ *               quantity:
+ *                 type: number
+ *                 example: 5
+ *
+ *     responses:
+ *       201:
+ *         description: Maxsulot yaratildi
+ *
+ *       403:
+ *         description: Ruxsat yo'q
+ *
+ *       500:
+ *         description: Server xatosi
+ */
+router.post("/create", authMiddleware, createProduct)
+
+/**
+ * @swagger
+ * /products/allProducts:
+ *   get:
+ *     summary: Barcha maxsulotlarni olish
+ *     tags: [Products]
+ *
+ *     responses:
+ *       200:
+ *         description: Maxsulotlar ro'yxati
+ *
+ *       500:
+ *         description: Server xatosi
+ */
+router.get("/allProducts", getAllProducts)
+
+/**
+ * @swagger
+ * /products/update/{id}:
+ *   put:
+ *     summary: Maxsulotni o'zgartirish (admin)
+ *     tags: [Products]
+ *     security:
+ *       - bearerAuth: []
+ *
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: Product ID
+ *
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               name:
+ *                 type: string
+ *               description:
+ *                 type: string
+ *               price:
+ *                 type: number
+ *               category:
+ *                 type: string
+ *               quantity:
+ *                 type: number
+ *
+ *     responses:
+ *       200:
+ *         description: Maxsulot o'zgartirildi
+ *
+ *       404:
+ *         description: Maxsulot topilmadi yoki ruxsat yo'q
+ *
+ *       500:
+ *         description: Server xatosi
+ */
+router.put("/update/:id", authMiddleware, updateProduct)
+
+/**
+ * @swagger
+ * /products/delete/{id}:
+ *   delete:
+ *     summary: Maxsulotni o'chirish (admin)
+ *     tags: [Products]
+ *     security:
+ *       - bearerAuth: []
+ *
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: Product ID
+ *
+ *     responses:
+ *       200:
+ *         description: Maxsulot o'chirildi
+ *
+ *       404:
+ *         description: Maxsulot topilmadi yoki ruxsat yo'q
+ *
+ *       500:
+ *         description: Server xatosi
+ */
+router.delete("/delete/:id", authMiddleware, deleteProduct)
+module.exports = router
+

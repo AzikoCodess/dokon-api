@@ -1,6 +1,6 @@
 const express = require("express")
 const router = express.Router()
-const { createOrder, myOrders } = require("../controllers/order.controller")
+const { createOrder, myOrders, getAllOrders } = require("../controllers/order.controller")
 const authMiddleware = require("../middleware/auth.middleware")
 
 /**
@@ -61,5 +61,25 @@ router.post("/create", authMiddleware, createOrder)
  */
 router.get("/myOrders", authMiddleware, myOrders)
 
+/**
+ * @swagger
+ * /orders/getAllOrders:
+ *   get:
+ *     summary: Barcha buyurtmalar
+ *     tags: [Orders]
+ *     security:
+ *       - bearerAuth: []
+ *
+ *     responses:
+ *       200:
+ *         description: Buyurtmalar ro'yxati
+ *
+ *       401:
+ *         description: Token yo'q
+ *
+ *       500:
+ *         description: Server xatosi
+ */
+router.get("/getAllOrders", authMiddleware, getAllOrders)
 
 module.exports = router
