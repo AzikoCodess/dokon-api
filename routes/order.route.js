@@ -1,6 +1,6 @@
 const express = require("express")
 const router = express.Router()
-const { createOrder, myOrders, getAllOrders } = require("../controllers/order.controller")
+const { createOrder, myOrders, getAllOrders, deleteOrder } = require("../controllers/order.controller")
 const authMiddleware = require("../middleware/auth.middleware")
 
 /**
@@ -81,5 +81,37 @@ router.get("/myOrders", authMiddleware, myOrders)
  *         description: Server xatosi
  */
 router.get("/getAllOrders", authMiddleware, getAllOrders)
+
+/**
+ * @swagger
+ * /orders/delete/{id}:
+ *   delete:
+ *     summary: Buyurtmani o'chirish (admin yoki egasi)
+ *     tags: [Orders]
+ *     security:
+ *       - bearerAuth: []
+ *
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: Order ID
+ *
+ *     responses:
+ *       200:
+ *         description: Buyurtma o'chirildi
+ *
+ *       403:
+ *         description: Ruxsat yo'q
+ *
+ *       404:
+ *         description: Buyurtma topilmadi
+ *
+ *       500:
+ *         description: Server xatosi
+ */
+router.delete("/delete/:id", authMiddleware, deleteOrder)
 
 module.exports = router
